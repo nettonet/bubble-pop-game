@@ -1,0 +1,507 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Zen Bubble Pop - Stress Relief</title>
+    <style>
+        :root { --soft-peach: #FFD8CC; --sky-blue: #A2D2FF; --lavender: #CDB4DB; }
+        body { background: linear-gradient(135deg, #FFF5E1, #E3F2FD); margin: 0; overflow: hidden; font-family: 'Quicksand', sans-serif; }
+        .ui-panel { background: rgba(255, 255, 255, 0.6); backdrop-filter: blur(15px); border: 1px solid rgba(255,255,255,0.5); border-radius: 30px; padding: 15px 25px; }
+        .score-box { color: #5D5D5D; font-size: 1.2rem; font-weight: 700; }
+        .instruction { bottom: 40px; background: rgba(255,255,255,0.8); color: #777; border: none; box-shadow: 0 4px 15px rgba(0,0,0,0.05); }
+        .start-btn { background: linear-gradient(135deg, #FFC8DD, #FFAFCC); color: white; border: none; padding: 20px 40px; border-radius: 50px; font-size: 1.5rem; cursor: pointer; transition: transform 0.3s; }
+        .start-btn:hover { transform: scale(1.05); }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+</head>
+<body>
+<div class="game-container">
+    <canvas id="gameCanvas"></canvas>
+    <div class="ui-panel">
+        <div class="score-box">✨ Calm Score: <span id="scoreValue">0</span></div>
+    </div>
+    <div class="instruction">🤏 Pinch thumb & index finger to pop bubbles! 🫧</div>
+    <button class="start-btn" id="startBtn">Start Popping</button>
+</div>
+<script>
+(function(){
+        // ---------- DOM Elements ----------
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const scoreSpan = document.getElementById('scoreValue');
+        const bubbleCountSpan = document.getElementById('bubbleCount');
+        const handStatusSpan = document.getElementById('handStatus');
+        const startBtn = document.getElementById('startBtn');
+
+        // ---------- Game Config ----------
+        const TOTAL_BUBBLES = 12;          // Constant number of bubbles present at the same time
+        let score = 0;                     // Total popped count
+        let bubbles = [];                  // Store normalized bubble coordinates { nx, ny, radiusNorm }
+        let animationId = null;
+        let camera = null;
+        let hands = null;
+        let videoElement = null;            // video source needed for mediapipe
+        let isGameRunning = false;          // Whether game is active (camera on and gesture detection running)
+        
+        // Pinch gesture detection related
+        let prevPinching = false;           // Pinch state from previous frame
+        let pinchCooldown = false;          // Short cooldown to prevent over-density (rising edge is enough, but used for sound sync)
+        
+        // Audio context (activated after user interaction)
+        let audioCtx = null;
+        let popSoundBuffer = null;           // Stores the synthesized pop sound effect
+        
+        // Helper variables: canvas size adaptation
+        let canvasWidth = 0, canvasHeight = 0;
+        
+        // Pinch threshold (Euclidean distance in normalized coordinate space)
+        const PINCH_THRESHOLD = 0.035;        // Pinch is considered when fingertip distance is less than this value (0~1 range)
+        
+        // ---------- Initialize Audio (synthesize bubble popping sound - short, bouncy pop) ----------
+        async function initAudio() {
+            if (audioCtx) return;
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            // Synthesize a fun, short "Pop" sound: sine wave + noise + fast decay
+            const sampleRate = audioCtx.sampleRate;
+            const duration = 0.18; // seconds
+            const bufferSize = sampleRate * duration;
+            const buffer = audioCtx.createBuffer(1, bufferSize, sampleRate);
+            const data = buffer.getChannelData(0);
+            for (let i = 0; i < bufferSize; i++) {
+                const t = i / sampleRate; // time 0~duration
+                // Main frequency fast sweep + noise
+                let freq = 800 * Math.exp(-t * 18);
+                let carrier = Math.sin(2 * Math.PI * freq * t);
+                let noise = (Math.random() * 2 - 1) * 0.45 * Math.exp(-t * 25);
+                let envelope = Math.exp(-t * 22); // fast decay
+                let pop = (carrier * 0.6 + noise) * envelope;
+                // Small click at the end
+                data[i] = pop * (t < 0.05 ? t / 0.05 : 1) * 0.8;
+            }
+            popSoundBuffer = buffer;
+        }
+        
+        // Play popping sound (must be after user interaction)
+        function playPopSound() {
+            if (!audioCtx || !popSoundBuffer) return;
+            // Allow AudioContext to be called when suspended, but ensure it's running
+            if (audioCtx.state === 'suspended') {
+                audioCtx.resume().then(() => {
+                    const source = audioCtx.createBufferSource();
+                    source.buffer = popSoundBuffer;
+                    source.connect(audioCtx.destination);
+                    source.start();
+                }).catch(e => console.log("Audio resume failed", e));
+                return;
+            }
+            try {
+                const source = audioCtx.createBufferSource();
+                source.buffer = popSoundBuffer;
+                source.connect(audioCtx.destination);
+                source.start();
+            } catch(e) { console.warn("Failed to play sound", e); }
+        }
+        
+        // ---------- Bubble Logic (using normalized coordinates, radius normalized based on width ratio) ----------
+        function initBubbles() {
+            const newBubbles = [];
+            for (let i = 0; i < TOTAL_BUBBLES; i++) {
+                newBubbles.push(generateRandomBubble());
+            }
+            return newBubbles;
+        }
+        
+        // Generate a single random bubble (normalized coordinates 0~1, radius based on width/height ratio 0.05~0.12)
+        function generateRandomBubble() {
+            // Leave margins to avoid being too far to the edge
+            const nx = 0.08 + Math.random() * 0.84;
+            const ny = 0.12 + Math.random() * 0.76;
+            // Relatively small radius: normalized size (relative to min(width, height) * radiusNorm)
+            const radiusNorm = 0.05 + Math.random() * 0.07;  // 5% ~ 12% visually comfortable
+            return { nx, ny, radiusNorm };
+        }
+        
+        // Replace popped bubble (generate a new bubble, keep total count constant)
+        function replaceBubble(index) {
+            if (index >= 0 && index < bubbles.length) {
+                bubbles[index] = generateRandomBubble();
+            }
+        }
+        
+        // Pop all bubbles colliding with the pinch point, update score and sound
+        function popBubblesAtPoint(normX, normY) {
+            if (!isGameRunning) return 0;
+            // Get current canvas size for collision detection (absolute or normalized distance both work)
+            // Since bubbles store normalized coordinates and normalized radius, normalized distance detection is easier
+            let poppedCount = 0;
+            // Iterate from the end to easily replace when deleting
+            for (let i = bubbles.length-1; i >= 0; i--) {
+                const b = bubbles[i];
+                // Calculate normalized Euclidean distance between two points
+                const dx = normX - b.nx;
+                const dy = normY - b.ny;
+                const dist = Math.hypot(dx, dy);
+                // Radius is also normalized length, need to check
+                if (dist < b.radiusNorm) {
+                    // Pop this bubble
+                    poppedCount++;
+                    // Play sound effect (one sound per bubble, overlapping for multiple pops - more satisfying)
+                    playPopSound();
+                    // Replace with new bubble
+                    replaceBubble(i);
+                }
+            }
+            if (poppedCount > 0) {
+                score += poppedCount;
+                updateUI();
+                // Add slight visual feedback: temporarily scale hand status text
+                handStatusSpan.style.transform = "scale(1.1)";
+                setTimeout(() => { if(handStatusSpan) handStatusSpan.style.transform = ""; }, 120);
+                // Add slight vibration (supported by some browsers)
+                if (navigator.vibrate) navigator.vibrate(50);
+            }
+            return poppedCount;
+        }
+        
+        // Update UI score and bubble count display
+        function updateUI() {
+            scoreSpan.innerText = score;
+            bubbleCountSpan.innerText = bubbles.length;
+        }
+        
+        // ---------- Drawing ----------
+        // Draw bubbles (translucent, colorful highlights)
+        function drawBubbles() {
+            if (!ctx) return;
+            for (let b of bubbles) {
+                // Convert to absolute coordinates and absolute radius
+                const cx = b.nx * canvasWidth;
+                const cy = b.ny * canvasHeight;
+                // Base size is the minimum of canvas width and height to keep bubbles round on different aspect ratios
+                const baseSize = Math.min(canvasWidth, canvasHeight);
+                const radius = b.radiusNorm * baseSize;
+                if (radius < 2) continue;
+                // Gradient for 3D effect
+                const grad = ctx.createRadialGradient(cx - radius*0.3, cy - radius*0.3, radius*0.15, cx, cy, radius);
+                grad.addColorStop(0, '#ffdd99');
+                grad.addColorStop(0.4, '#ffaa66');
+                grad.addColorStop(0.8, '#ff8844');
+                grad.addColorStop(1, '#dd5533');
+                ctx.beginPath();
+                ctx.arc(cx, cy, radius, 0, Math.PI*2);
+                ctx.fillStyle = grad;
+                ctx.fill();
+                ctx.shadowBlur = 12;
+                ctx.shadowColor = "rgba(255,200,100,0.6)";
+                ctx.strokeStyle = 'rgba(255,245,200,0.9)';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+                // Highlight
+                ctx.beginPath();
+                ctx.arc(cx - radius*0.2, cy - radius*0.2, radius*0.2, 0, Math.PI*2);
+                ctx.fillStyle = 'rgba(255,255,210,0.7)';
+                ctx.fill();
+                ctx.shadowBlur = 0;
+                // Decorative sparkle
+                ctx.beginPath();
+                ctx.arc(cx - radius*0.1, cy - radius*0.25, radius*0.07, 0, Math.PI*2);
+                ctx.fillStyle = 'white';
+                ctx.fill();
+            }
+        }
+        
+        // Draw hand skeleton and pinch point (visual feedback)
+        function drawHandLandmarks(landmarks, pinchCenterNorm = null) {
+            if (!landmarks || !ctx) return;
+            const w = canvasWidth;
+            const h = canvasHeight;
+            // Draw connections (simple skeleton)
+            const connections = [
+                [0,1], [1,2], [2,3], [3,4],       // Thumb
+                [0,5], [5,6], [6,7], [7,8],       // Index finger
+                [0,9], [9,10], [10,11], [11,12],  // Middle finger
+                [0,13], [13,14], [14,15], [15,16],// Ring finger
+                [0,17], [17,18], [18,19], [19,20] // Pinky
+            ];
+            ctx.save();
+            ctx.lineWidth = 3;
+            ctx.shadowBlur = 0;
+            for (let conn of connections) {
+                const start = landmarks[conn[0]];
+                const end = landmarks[conn[1]];
+                if (start && end && start.visibility > 0.5 && end.visibility > 0.5) {
+                    ctx.beginPath();
+                    ctx.moveTo(start.x * w, start.y * h);
+                    ctx.lineTo(end.x * w, end.y * h);
+                    ctx.strokeStyle = '#00ffff';
+                    ctx.shadowColor = 'cyan';
+                    ctx.stroke();
+                }
+            }
+            // Draw key points
+            for (let lm of landmarks) {
+                if (lm.visibility > 0.5) {
+                    ctx.beginPath();
+                    ctx.arc(lm.x * w, lm.y * h, 5, 0, 2*Math.PI);
+                    ctx.fillStyle = '#ffd966';
+                    ctx.fill();
+                    ctx.beginPath();
+                    ctx.arc(lm.x * w, lm.y * h, 2, 0, 2*Math.PI);
+                    ctx.fillStyle = '#ff6600';
+                    ctx.fill();
+                }
+            }
+            // Draw pinch point hint
+            if (pinchCenterNorm) {
+                const px = pinchCenterNorm.x * w;
+                const py = pinchCenterNorm.y * h;
+                ctx.beginPath();
+                ctx.arc(px, py, 22, 0, Math.PI*2);
+                ctx.strokeStyle = '#ff3388';
+                ctx.lineWidth = 4;
+                ctx.shadowBlur = 10;
+                ctx.stroke();
+                ctx.beginPath();
+                ctx.arc(px, py, 10, 0, Math.PI*2);
+                ctx.fillStyle = 'rgba(255,80,120,0.6)';
+                ctx.fill();
+                ctx.shadowBlur = 0;
+            }
+            ctx.restore();
+        }
+        
+        // Draw video background + tools
+        function drawVideoBackground(video) {
+            if (!ctx || !video || video.readyState < 2) return;
+            // Keep canvas proportion filled
+            const vw = video.videoWidth;
+            const vh = video.videoHeight;
+            if (vw === 0 || vh === 0) return;
+            // Scale video to fill canvas and center crop (maintain ratio cover)
+            const scale = Math.max(canvasWidth / vw, canvasHeight / vh);
+            const dx = (canvasWidth - vw * scale) / 2;
+            const dy = (canvasHeight - vh * scale) / 2;
+            ctx.save();
+            ctx.setTransform(1,0,0,1,0,0);
+            ctx.drawImage(video, dx, dy, vw * scale, vh * scale);
+            ctx.restore();
+        }
+        
+        // ---------- MediaPipe gesture recognition main logic ----------
+        let currentLandmarks = null;
+        let pinchCenter = null;       // {x, y} normalized coordinates
+        
+        // Handle pinch detection and popping
+        function processPinchAndPop(landmarks) {
+            if (!landmarks || !isGameRunning) return;
+            // Get thumb tip (4) and index finger tip (8)
+            const thumbTip = landmarks[4];
+            const indexTip = landmarks[8];
+            if (!thumbTip || !indexTip || thumbTip.visibility < 0.6 || indexTip.visibility < 0.6) {
+                // Low confidence, reset pinch state
+                if (prevPinching) prevPinching = false;
+                handStatusSpan.innerText = '✋ Hand not detected';
+                return;
+            }
+            // Calculate normalized distance
+            const dx = thumbTip.x - indexTip.x;
+            const dy = thumbTip.y - indexTip.y;
+            const distance = Math.hypot(dx, dy);
+            const isPinching = distance < PINCH_THRESHOLD;
+            // Update UI prompt
+            if (isPinching) {
+                handStatusSpan.innerText = '🤏 Pinching! Aim at bubbles~';
+                handStatusSpan.style.color = '#ffaa44';
+            } else {
+                handStatusSpan.innerText = '🖐️ Pinch thumb + index finger to pop bubbles';
+                handStatusSpan.style.color = '#aaffdd';
+            }
+            // Pinch center point = midpoint between thumb and index finger
+            const centerNorm = {
+                x: (thumbTip.x + indexTip.x) / 2,
+                y: (thumbTip.y + indexTip.y) / 2
+            };
+            pinchCenter = centerNorm;
+            // Trigger popping on rising edge (from not pinching to pinching)
+            if (isPinching && !prevPinching) {
+                // Pop detection (bubbles at pinch center)
+                popBubblesAtPoint(centerNorm.x, centerNorm.y);
+            }
+            prevPinching = isPinching;
+        }
+        
+        // Main render loop (draw video + bubbles + hands)
+        function renderLoop(videoElement) {
+            if (!isGameRunning) return;
+            if (!ctx || !canvas || !videoElement) return;
+            // Update canvas size
+            if (canvas.width !== canvas.clientWidth || canvas.height !== canvas.clientHeight) {
+                canvasWidth = canvas.clientWidth;
+                canvasHeight = canvas.clientHeight;
+                canvas.width = canvasWidth;
+                canvas.height = canvasHeight;
+            }
+            // Draw video background
+            drawVideoBackground(videoElement);
+            // Draw bubbles (gentle floating animation for more satisfying experience)
+            // (bubbles drift slightly for added liveliness)
+            for (let i = 0; i < bubbles.length; i++) {
+                let b = bubbles[i];
+                // Gentle drift animation, keep within bounds
+                let shift = 0.002;
+                b.nx += (Math.sin(Date.now() * 0.0008 + i) * 0.0008);
+                b.ny += (Math.cos(Date.now() * 0.0005 + i*2) * 0.0006);
+                // Boundary restrictions to prevent drifting out of sight
+                b.nx = Math.min(0.94, Math.max(0.06, b.nx));
+                b.ny = Math.min(0.92, Math.max(0.08, b.ny));
+            }
+            drawBubbles();
+            // Draw hand skeleton and pinch point
+            if (currentLandmarks) {
+                drawHandLandmarks(currentLandmarks, pinchCenter);
+            }
+            // Additional dynamic pinch UI text
+            requestAnimationFrame(() => renderLoop(videoElement));
+        }
+        
+        // ----- MediaPipe hands callback initialization -----
+        function initMediaPipe() {
+            hands = new Hands({
+                locateFile: (file) => {
+                    return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+                }
+            });
+            hands.setOptions({
+                maxNumHands: 1,          // Track only one hand for better performance
+                modelComplexity: 1,
+                minDetectionConfidence: 0.5,
+                minTrackingConfidence: 0.5
+            });
+            hands.onResults(onHandResults);
+        }
+        
+        function onHandResults(results) {
+            if (!isGameRunning) return;
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                const landmarks = results.multiHandLandmarks[0];
+                currentLandmarks = landmarks;
+                processPinchAndPop(landmarks);
+            } else {
+                currentLandmarks = null;
+                pinchCenter = null;
+                if(prevPinching) prevPinching = false;
+                handStatusSpan.innerText = '🖐️ Hand not detected';
+            }
+        }
+        
+        // ----- Start camera and bind MediaPipe camera -----
+        async function startGame() {
+            if (isGameRunning) return;
+            // Activate audio on user interaction
+            try {
+                await initAudio();
+                if (audioCtx && audioCtx.state === 'suspended') await audioCtx.resume();
+                // No silent test playback needed
+            } catch(e) { console.log("Audio startup"); }
+            
+            // Initialize canvas size
+            canvasWidth = canvas.clientWidth;
+            canvasHeight = canvas.clientHeight;
+            canvas.width = canvasWidth;
+            canvas.height = canvasHeight;
+            
+            // Reset game data
+            score = 0;
+            bubbles = initBubbles();
+            updateUI();
+            prevPinching = false;
+            pinchCenter = null;
+            currentLandmarks = null;
+            isGameRunning = true;
+            
+            // Start mediapipe hands and camera
+            if (!hands) initMediaPipe();
+            
+            // Get video element (for camera)
+            if (!videoElement) {
+                videoElement = document.createElement('video');
+                videoElement.setAttribute('autoplay', '');
+                videoElement.setAttribute('playsinline', '');
+                videoElement.style.display = 'none';
+                document.body.appendChild(videoElement);
+            }
+            
+            // Start camera
+            if (camera) {
+                camera.stop();
+            }
+            camera = new Camera(videoElement, {
+                onFrame: async () => {
+                    if (hands && isGameRunning) {
+                        await hands.send({image: videoElement});
+                    }
+                },
+                width: 640,
+                height: 480,
+                facingMode: "user"  // Front camera
+            });
+            await camera.start();
+            
+            // Start render loop
+            if (animationId) cancelAnimationFrame(animationId);
+            animationId = requestAnimationFrame(() => renderLoop(videoElement));
+            
+            // Hide start button
+            startBtn.style.display = 'none';
+            handStatusSpan.style.display = 'flex';
+        }
+        
+        // Stop game resources (optional, but keep start)
+        function stopGame() {
+            if (camera) {
+                camera.stop();
+            }
+            if (animationId) {
+                cancelAnimationFrame(animationId);
+                animationId = null;
+            }
+            isGameRunning = false;
+            startBtn.style.display = 'flex';
+        }
+        
+        // Initialize event listeners: start button
+        startBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            startGame().catch(err => {
+                console.error("Startup failed:", err);
+                alert("Unable to access camera or initialization failed. Please make sure you are using HTTPS or localhost, and grant camera permissions.");
+                startBtn.style.display = 'flex';
+                isGameRunning = false;
+            });
+        });
+        
+        // Prevent page scrolling and touch interference
+        window.addEventListener('touchmove', (e) => {
+            if (e.target === canvas) e.preventDefault();
+        }, { passive: false });
+        
+        // Release resources on page unload
+        window.addEventListener('beforeunload', () => {
+            if (camera) camera.stop();
+            if (hands) hands.close();
+        });
+        
+        // Initial styling
+        canvasWidth = canvas.clientWidth;
+        canvasHeight = canvas.clientHeight;
+        // Placeholder drawing
+        ctx.fillStyle = "#111";
+        ctx.fillRect(0,0,canvasWidth,canvasHeight);
+        ctx.font = "bold 20px sans-serif";
+        ctx.fillStyle = "white";
+        ctx.fillText("Click 'Start Camera' to pop bubbles", canvasWidth/2-150, canvasHeight/2);
+    })();
+</script>
+</body>
+</html>
