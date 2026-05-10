@@ -23,7 +23,7 @@
         }
         .ui-overlay {
             position: absolute;
-            top: env(safe-area-inset-top, 20px);
+            top: calc(env(safe-area-inset-top, 20px) + 30px);
             left:50%; transform: translateX(-50%);
             background: rgba(255,255,255,0.7); backdrop-filter: blur(15px);
             border-radius: 30px; padding: 10px 25px;
@@ -141,12 +141,13 @@
 
     // ---------- Bubbles ----------
     function generateRandomBubble() {
-        return {
-            nx: 0.08 + Math.random() * 0.84,
-            ny: 0.12 + Math.random() * 0.76,
-            radiusNorm: 0.05 + Math.random() * 0.07
-        };
-    }
+    return {
+        nx: 0.08 + Math.random() * 0.84,
+        ny: 0.12 + Math.random() * 0.76,
+        radiusNorm: 0.05 + Math.random() * 0.07,
+        hue: Math.random() * 360   // 随机色相，用于彩虹肥皂泡
+    };
+}
 
     function initBubbles() {
         bubbles = [];
@@ -182,43 +183,44 @@
 
     // ---------- Drawing ----------
     function drawBubbles() {
-        for (let b of bubbles) {
-            const cx = b.nx * canvasWidth;
-            const cy = b.ny * canvasHeight;
-            const baseSize = Math.min(canvasWidth, canvasHeight);
-            const radius = b.radiusNorm * baseSize;
-            if (radius < 2) continue;
+    for (let b of bubbles) {
+        const cx = b.nx * canvasWidth;
+        const cy = b.ny * canvasHeight;
+        const baseSize = Math.min(canvasWidth, canvasHeight);
+        const radius = b.radiusNorm * baseSize;
+        if (radius < 2) continue;
 
-            // 肥皂泡风格渐变：浅蓝 → 淡紫 → 透明边缘
-            const grad = ctx.createRadialGradient(
-                cx - radius * 0.3, cy - radius * 0.3, radius * 0.1,
-                cx, cy, radius
-            );
-            grad.addColorStop(0, 'rgba(255, 255, 255, 0.9)');      // 中心高光
-            grad.addColorStop(0.3, 'rgba(200, 220, 255, 0.7)');   // 淡蓝
-            grad.addColorStop(0.7, 'rgba(160, 180, 240, 0.4)');   // 蓝紫
-            grad.addColorStop(1, 'rgba(130, 150, 220, 0.1)');     // 几乎透明边缘
+        const hue = b.hue;
+        // 肥皂泡中心纯白，中间带彩色半透明，边缘无色透明
+        const grad = ctx.createRadialGradient(
+            cx - radius * 0.3, cy - radius * 0.3, radius * 0.1,
+            cx, cy, radius
+        );
+        grad.addColorStop(0, 'rgba(255, 255, 255, 0.95)');
+        grad.addColorStop(0.3, `hsla(${hue}, 70%, 70%, 0.6)`);
+        grad.addColorStop(0.7, `hsla(${hue}, 80%, 60%, 0.2)`);
+        grad.addColorStop(1, 'rgba(255, 255, 255, 0.05)');
 
-            ctx.beginPath();
-            ctx.arc(cx, cy, radius, 0, Math.PI * 2);
-            ctx.fillStyle = grad;
-            ctx.shadowBlur = 10;
-            ctx.shadowColor = 'rgba(120, 180, 255, 0.5)';         // 淡蓝光晕
-            ctx.fill();
-            ctx.shadowBlur = 0;
+        ctx.beginPath();
+        ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+        ctx.fillStyle = grad;
+        ctx.shadowBlur = 10;
+        ctx.shadowColor = `hsla(${hue}, 80%, 70%, 0.4)`;
+        ctx.fill();
+        ctx.shadowBlur = 0;
 
-            // 边缘线条
-            ctx.strokeStyle = 'rgba(200, 220, 255, 0.6)';
-            ctx.lineWidth = 1.5;
-            ctx.stroke();
+        // 边缘淡白描边
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.25)';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
 
-            // 小高光点
-            ctx.beginPath();
-            ctx.arc(cx - radius * 0.2, cy - radius * 0.2, radius * 0.2, 0, Math.PI * 2);
-            ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
-            ctx.fill();
-        }
+        // 左上小高光
+        ctx.beginPath();
+        ctx.arc(cx - radius * 0.2, cy - radius * 0.2, radius * 0.2, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+        ctx.fill();
     }
+}
 
 
     function drawHand(landmarks) {
@@ -320,14 +322,14 @@
     drawBubbles();
     if (currentLandmarks) drawHand(currentLandmarks);
 
-    // ---- 新增：显示手部检测状态 ----
+
     if (currentLandmarks) {
         ctx.font = 'bold 18px "Quicksand", sans-serif';
         ctx.fillStyle = '#00ff88';
         ctx.shadowBlur = 8;
         ctx.shadowColor = '#00ff88';
-        ctx.textAlign = 'right';
-        ctx.fillText('✓ Hand Detected', canvasWidth - 20, 40);
+        ctx.textAlign = 'left';
+        ctx.fillText('✓ Hand Detected', 20, canvasHeight - 40);
         ctx.shadowBlur = 0;
     }
 
@@ -342,8 +344,8 @@
         hands.setOptions({
             maxNumHands: 1,
             modelComplexity: 1,
-            minDetectionConfidence: 0.4,   // 原 0.5，降低以便更快检测手
-            minTrackingConfidence: 0.4     // 原 0.5
+            minDetectionConfidence: 0.4,   
+            minTrackingConfidence: 0.4     
         });
         hands.onResults((results) => {
             if (!isGameRunning) return;
