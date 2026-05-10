@@ -222,35 +222,52 @@
 
 
     function drawHand(landmarks) {
-        if (!landmarks) return;
-        const connections = [
-            [0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],
-            [0,9],[9,10],[10,11],[11,12],[0,13],[13,14],[14,15],[15,16],
-            [0,17],[17,18],[18,19],[19,20]
-        ];
-        ctx.save();
-        ctx.lineWidth = 2;
-        for (let [a,b] of connections) {
-            const p1 = landmarks[a], p2 = landmarks[b];
-            if (p1.visibility > 0.5 && p2.visibility > 0.5) {
-                ctx.beginPath();
-                ctx.moveTo(p1.x * canvasWidth, p1.y * canvasHeight);
-                ctx.lineTo(p2.x * canvasWidth, p2.y * canvasHeight);
-                ctx.strokeStyle = '#00ffff';
-                ctx.stroke();
-            }
-        }
-        if (pinchCenter) {
-            const px = pinchCenter.x * canvasWidth;
-            const py = pinchCenter.y * canvasHeight;
+    if (!landmarks) return;
+    const connections = [
+        [0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],
+        [0,9],[9,10],[10,11],[11,12],[0,13],[13,14],[14,15],[15,16],
+        [0,17],[17,18],[18,19],[19,20]
+    ];
+    ctx.save();
+    ctx.lineWidth = 3;  // 加粗线条
+    for (let [a,b] of connections) {
+        const p1 = landmarks[a], p2 = landmarks[b];
+        // 降低可见度阈值，确保所有检测到的点都显示
+        if (p1.visibility > 0.1 && p2.visibility > 0.1) {
             ctx.beginPath();
-            ctx.arc(px, py, 18, 0, 2*Math.PI);
-            ctx.strokeStyle = '#ff3388';
-            ctx.lineWidth = 3;
+            ctx.moveTo(p1.x * canvasWidth, p1.y * canvasHeight);
+            ctx.lineTo(p2.x * canvasWidth, p2.y * canvasHeight);
+            ctx.strokeStyle = '#00ffff';
+            ctx.shadowBlur = 8;
+            ctx.shadowColor = '#00ffff';
             ctx.stroke();
         }
-        ctx.restore();
     }
+    // 绘制所有关键点（绿点，visibility > 0.1 即可）
+    for (let lm of landmarks) {
+        if (lm.visibility > 0.1) {
+            ctx.beginPath();
+            ctx.arc(lm.x * canvasWidth, lm.y * canvasHeight, 6, 0, 2*Math.PI);
+            ctx.fillStyle = '#00ff88';
+            ctx.shadowBlur = 6;
+            ctx.shadowColor = '#00ff88';
+            ctx.fill();
+        }
+    }
+    // 绘制捏合指示圈
+    if (pinchCenter) {
+        const px = pinchCenter.x * canvasWidth;
+        const py = pinchCenter.y * canvasHeight;
+        ctx.beginPath();
+        ctx.arc(px, py, 18, 0, 2*Math.PI);
+        ctx.strokeStyle = '#ff3388';
+        ctx.lineWidth = 3;
+        ctx.shadowBlur = 12;
+        ctx.shadowColor = '#ff3388';
+        ctx.stroke();
+    }
+    ctx.restore();
+}
 
     function drawVideoBackground(video) {
         if (!video || video.readyState < 2) return;
@@ -284,26 +301,38 @@
 
     // ---------- Render loop ----------
     function renderLoop() {
-        if (!isGameRunning) return;
-        if (canvas.clientWidth !== canvasWidth || canvas.clientHeight !== canvasHeight) {
-            canvasWidth = canvas.clientWidth;
-            canvasHeight = canvas.clientHeight;
-            canvas.width = canvasWidth;
-            canvas.height = canvasHeight;
-        }
-        ctx.clearRect(0,0,canvasWidth,canvasHeight);
-        drawVideoBackground(videoElement);
-        // bubble drift
-        for (let b of bubbles) {
-            b.nx += Math.sin(Date.now()*0.0008 + b.nx*10) * 0.0005;
-            b.ny += Math.cos(Date.now()*0.0005 + b.ny*10) * 0.0005;
-            b.nx = Math.min(0.94, Math.max(0.06, b.nx));
-            b.ny = Math.min(0.92, Math.max(0.08, b.ny));
-        }
-        drawBubbles();
-        if (currentLandmarks) drawHand(currentLandmarks);
-        animationId = requestAnimationFrame(renderLoop);
+    if (!isGameRunning) return;
+    if (canvas.clientWidth !== canvasWidth || canvas.clientHeight !== canvasHeight) {
+        canvasWidth = canvas.clientWidth;
+        canvasHeight = canvas.clientHeight;
+        canvas.width = canvasWidth;
+        canvas.height = canvasHeight;
     }
+    ctx.clearRect(0,0,canvasWidth,canvasHeight);
+    drawVideoBackground(videoElement);
+    // bubble drift
+    for (let b of bubbles) {
+        b.nx += Math.sin(Date.now()*0.0008 + b.nx*10) * 0.0005;
+        b.ny += Math.cos(Date.now()*0.0005 + b.ny*10) * 0.0005;
+        b.nx = Math.min(0.94, Math.max(0.06, b.nx));
+        b.ny = Math.min(0.92, Math.max(0.08, b.ny));
+    }
+    drawBubbles();
+    if (currentLandmarks) drawHand(currentLandmarks);
+
+    // ---- 新增：显示手部检测状态 ----
+    if (currentLandmarks) {
+        ctx.font = 'bold 18px "Quicksand", sans-serif';
+        ctx.fillStyle = '#00ff88';
+        ctx.shadowBlur = 8;
+        ctx.shadowColor = '#00ff88';
+        ctx.textAlign = 'right';
+        ctx.fillText('✓ Hand Detected', canvasWidth - 20, 40);
+        ctx.shadowBlur = 0;
+    }
+
+    animationId = requestAnimationFrame(renderLoop);
+}
 
     // ---------- MediaPipe setup (local assets) ----------
     function initMediaPipe() {
