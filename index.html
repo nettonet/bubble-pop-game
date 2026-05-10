@@ -3,59 +3,71 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <!-- Remove restrictive camera policy -->
     <meta http-equiv="Permissions-Policy" content="camera *">
     <title>Zen Bubble Pop - Stress Relief</title>
     <style>
-        :root { --soft-peach: #FFD8CC; --sky-blue: #A2D2FF; --lavender: #CDB4DB; }
-        body { 
-            background: linear-gradient(135deg, #FFF5E1, #E3F2FD); 
-            margin: 0; overflow: hidden; font-family: 'Quicksand', sans-serif; 
-            touch-action: none; /* prevents page pull-to-refresh */
+        * { margin:0; padding:0; box-sizing:border-box; }
+        body, html {
+            width:100%; height:100%;
+            background: linear-gradient(135deg, #FFF5E1, #E3F2FD);
+            font-family: 'Quicksand', sans-serif;
+            overflow: hidden;
+            touch-action: none; /* prevents pull-to-refresh */
         }
-        .game-container {
-            position: relative; width: 100%; height: 100vh; height: 100dvh;
+        .game-wrapper {
+            position: relative; width:100%; height:100%;
         }
         canvas#gameCanvas {
-            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            position: absolute; top:0; left:0; width:100%; height:100%;
         }
-        .ui-panel {
+        .ui-overlay {
             position: absolute;
             top: env(safe-area-inset-top, 20px);
-            left: 50%; transform: translateX(-50%);
-            background: rgba(255, 255, 255, 0.6); backdrop-filter: blur(15px);
-            border: 1px solid rgba(255,255,255,0.5); border-radius: 30px;
-            padding: 10px 25px; z-index: 10;
+            left:50%; transform: translateX(-50%);
+            background: rgba(255,255,255,0.7); backdrop-filter: blur(15px);
+            border-radius: 30px; padding: 10px 25px;
+            font-size: 1.2rem; font-weight: bold; color: #555;
+            z-index:10;
         }
-        .score-box { color: #5D5D5D; font-size: 1.2rem; font-weight: 700; }
         .hand-status {
-            position: absolute; bottom: 60px; left: 50%; transform: translateX(-50%);
+            position: absolute; bottom: 80px; left:50%; transform: translateX(-50%);
             background: rgba(255,255,255,0.8); backdrop-filter: blur(10px);
             border-radius: 20px; padding: 8px 20px;
-            color: #777; font-size: 0.95rem; white-space: nowrap; z-index: 10;
-            display: none; /* shown when game starts */
+            color: #777; font-size: 0.95rem; white-space: nowrap;
+            z-index:10; display: none;
         }
         .start-btn {
-            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            position: absolute; top:50%; left:50%; transform: translate(-50%,-50%);
             background: linear-gradient(135deg, #FFC8DD, #FFAFCC);
             color: white; border: none; padding: 20px 40px; border-radius: 50px;
-            font-size: 1.5rem; cursor: pointer; transition: transform 0.3s; z-index: 20;
+            font-size: 1.5rem; cursor: pointer; transition: 0.2s; z-index:20;
             box-shadow: 0 8px 25px rgba(255,100,150,0.4);
         }
-        .start-btn:active { transform: translate(-50%, -50%) scale(0.95); }
+        .start-btn:active { transform: translate(-50%,-50%) scale(0.95); }
+        .start-btn:disabled { opacity:0.7; pointer-events:none; }
+        .loading-text {
+            position: absolute; bottom:50%; left:50%; transform: translate(-50%,50%);
+            color: #555; font-weight: bold; display: none; z-index:21;
+        }
     </style>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/hands.js" crossorigin="anonymous"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3/camera_utils.js" crossorigin="anonymous"></script>
+    <!-- Local MediaPipe libraries -->
+    <script src="lib/mediapipe/hands/hands.js"></script>
+    <script src="lib/mediapipe/camera_utils.js"></script>
 </head>
 <body>
-<div class="game-container">
+<div class="game-wrapper">
     <canvas id="gameCanvas"></canvas>
-    <div class="ui-panel">
-        <div class="score-box">✨ Calm Score: <span id="scoreValue">0</span></div>
+    <div class="ui-overlay">
+        ✨ Calm Score: <span id="scoreValue">0</span>
     </div>
-    <!-- Dynamic hand status replaces static instruction -->
-    <div class="hand-status" id="handStatus">🤏 Pinch thumb & index finger to pop bubbles 🫧</div>
+    <div class="hand-status" id="handStatus">
+        🤏 Pinch thumb & index finger to pop bubbles 🫧
+    </div>
     <button class="start-btn" id="startBtn">Start Popping</button>
+    <div class="loading-text" id="loadingText">Loading...</div>
 </div>
+
 <script>
 (function() {
     // ---------- DOM Elements ----------
@@ -64,6 +76,14 @@
     const scoreSpan = document.getElementById('scoreValue');
     const handStatusDiv = document.getElementById('handStatus');
     const startBtn = document.getElementById('startBtn');
+    const loadingText = document.getElementById('loadingText');
+
+    // Check if local libraries loaded correctly
+    if (typeof Hands === 'undefined' || typeof Camera === 'undefined') {
+        startBtn.textContent = 'MediaPipe not loaded';
+        startBtn.disabled = true;
+        throw new Error('Local MediaPipe files missing or failed to load');
+    }
 
     // ---------- Game Config ----------
     const TOTAL_BUBBLES = 12;
@@ -77,10 +97,10 @@
     let prevPinching = false;
     let pinchCenter = null;
     let currentLandmarks = null;
-    let canvasWidth = 0, canvasHeight = 0;
-    const PINCH_THRESHOLD = 0.035; // normalized distance
+    let canvasWidth, canvasHeight;
+    const PINCH_THRESHOLD = 0.035;
 
-    // ---------- Audio ----------
+    // ---------- Audio (synthesized pop sound) ----------
     let audioCtx = null;
     let popSoundBuffer = null;
 
@@ -94,9 +114,9 @@
         const data = buffer.getChannelData(0);
         for (let i = 0; i < bufferSize; i++) {
             const t = i / sampleRate;
-            let freq = 800 * Math.exp(-t * 18);
-            let carrier = Math.sin(2 * Math.PI * freq * t);
-            let noise = (Math.random() * 2 - 1) * 0.45 * Math.exp(-t * 25);
+            const freq = 800 * Math.exp(-t * 18);
+            const carrier = Math.sin(2 * Math.PI * freq * t);
+            const noise = (Math.random() * 2 - 1) * 0.45 * Math.exp(-t * 25);
             data[i] = (carrier * 0.6 + noise) * Math.exp(-t * 22) * 0.8;
         }
         popSoundBuffer = buffer;
@@ -119,7 +139,7 @@
         src.start();
     }
 
-    // ---------- Bubble Logic ----------
+    // ---------- Bubbles ----------
     function generateRandomBubble() {
         return {
             nx: 0.08 + Math.random() * 0.84,
@@ -168,12 +188,12 @@
             const baseSize = Math.min(canvasWidth, canvasHeight);
             const radius = b.radiusNorm * baseSize;
             if (radius < 2) continue;
-            const grad = ctx.createRadialGradient(cx - radius * 0.3, cy - radius * 0.3, radius * 0.1, cx, cy, radius);
+            const grad = ctx.createRadialGradient(cx - radius*0.3, cy - radius*0.3, radius*0.1, cx, cy, radius);
             grad.addColorStop(0, '#ffdd99');
             grad.addColorStop(0.5, '#ffaa66');
             grad.addColorStop(1, '#dd5533');
             ctx.beginPath();
-            ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+            ctx.arc(cx, cy, radius, 0, Math.PI*2);
             ctx.fillStyle = grad;
             ctx.shadowBlur = 8;
             ctx.shadowColor = 'rgba(255,150,50,0.4)';
@@ -184,7 +204,7 @@
             ctx.stroke();
             // highlight
             ctx.beginPath();
-            ctx.arc(cx - radius * 0.2, cy - radius * 0.2, radius * 0.2, 0, Math.PI * 2);
+            ctx.arc(cx - radius*0.2, cy - radius*0.2, radius*0.2, 0, Math.PI*2);
             ctx.fillStyle = 'rgba(255,255,210,0.6)';
             ctx.fill();
         }
@@ -199,7 +219,7 @@
         ];
         ctx.save();
         ctx.lineWidth = 2;
-        for (let [a, b] of connections) {
+        for (let [a,b] of connections) {
             const p1 = landmarks[a], p2 = landmarks[b];
             if (p1.visibility > 0.5 && p2.visibility > 0.5) {
                 ctx.beginPath();
@@ -213,7 +233,7 @@
             const px = pinchCenter.x * canvasWidth;
             const py = pinchCenter.y * canvasHeight;
             ctx.beginPath();
-            ctx.arc(px, py, 18, 0, 2 * Math.PI);
+            ctx.arc(px, py, 18, 0, 2*Math.PI);
             ctx.strokeStyle = '#ff3388';
             ctx.lineWidth = 3;
             ctx.stroke();
@@ -231,7 +251,7 @@
         ctx.drawImage(video, dx, dy, vw * scale, vh * scale);
     }
 
-    // ---------- Gesture Recognition ----------
+    // ---------- Gesture detection ----------
     function processPinch(landmarks) {
         if (!isGameRunning || !landmarks) return;
         const thumb = landmarks[4], index = landmarks[8];
@@ -242,22 +262,16 @@
         }
         const dist = Math.hypot(thumb.x - index.x, thumb.y - index.y);
         const pinching = dist < PINCH_THRESHOLD;
-        pinchCenter = { x: (thumb.x + index.x) / 2, y: (thumb.y + index.y) / 2 };
-
+        pinchCenter = { x: (thumb.x + index.x)/2, y: (thumb.y + index.y)/2 };
         if (pinching && !prevPinching) {
             popBubblesAtPoint(pinchCenter.x, pinchCenter.y);
         }
-        if (pinching) {
-            handStatusDiv.textContent = '🤏 Pinching! Aim at bubbles';
-            handStatusDiv.style.color = '#ffaa44';
-        } else {
-            handStatusDiv.textContent = '🖐️ Pinch thumb & index finger to pop bubbles';
-            handStatusDiv.style.color = '#777';
-        }
+        handStatusDiv.textContent = pinching ? '🤏 Pinching! Aim at bubbles' : '🖐️ Pinch thumb & index finger to pop bubbles';
+        handStatusDiv.style.color = pinching ? '#ffaa44' : '#777';
         prevPinching = pinching;
     }
 
-    // ---------- Render Loop ----------
+    // ---------- Render loop ----------
     function renderLoop() {
         if (!isGameRunning) return;
         if (canvas.clientWidth !== canvasWidth || canvas.clientHeight !== canvasHeight) {
@@ -266,13 +280,12 @@
             canvas.width = canvasWidth;
             canvas.height = canvasHeight;
         }
-        ctx.clearRect(0, 0, canvasWidth, canvasHeight);
+        ctx.clearRect(0,0,canvasWidth,canvasHeight);
         drawVideoBackground(videoElement);
-
-        // gentle bubble drift
+        // bubble drift
         for (let b of bubbles) {
-            b.nx += Math.sin(Date.now() * 0.0008 + b.nx * 10) * 0.0005;
-            b.ny += Math.cos(Date.now() * 0.0005 + b.ny * 10) * 0.0005;
+            b.nx += Math.sin(Date.now()*0.0008 + b.nx*10) * 0.0005;
+            b.ny += Math.cos(Date.now()*0.0005 + b.ny*10) * 0.0005;
             b.nx = Math.min(0.94, Math.max(0.06, b.nx));
             b.ny = Math.min(0.92, Math.max(0.08, b.ny));
         }
@@ -281,10 +294,10 @@
         animationId = requestAnimationFrame(renderLoop);
     }
 
-    // ---------- MediaPipe Setup ----------
+    // ---------- MediaPipe setup (local assets) ----------
     function initMediaPipe() {
         hands = new Hands({
-            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/${file}`
+            locateFile: (file) => `lib/mediapipe/hands/${file}`
         });
         hands.setOptions({
             maxNumHands: 1,
@@ -305,14 +318,15 @@
         });
     }
 
-    // ---------- Start / Stop Game ----------
+    // ---------- Start / Stop ----------
     async function startGame() {
         if (isGameRunning) return;
         startBtn.disabled = true;
+        loadingText.style.display = 'block';
 
-        // Audio must be initiated from a user gesture
+        // Activate audio (must be in user gesture)
         if (!audioCtx) {
-            try { await initAudio(); } catch (e) { /* non-critical */ }
+            try { await initAudio(); } catch(e) {}
         }
         if (audioCtx?.state === 'suspended') {
             await audioCtx.resume();
@@ -333,15 +347,17 @@
 
         if (!hands) initMediaPipe();
 
+        // Create hidden video element (muted for mobile autoplay)
         if (!videoElement) {
             videoElement = document.createElement('video');
             videoElement.setAttribute('playsinline', '');
             videoElement.setAttribute('autoplay', '');
-            videoElement.muted = true; // required for mobile autoplay
+            videoElement.muted = true;
             videoElement.style.display = 'none';
             document.body.appendChild(videoElement);
         }
 
+        // Start camera
         try {
             if (camera) camera.stop();
             camera = new Camera(videoElement, {
@@ -357,25 +373,26 @@
             await camera.start();
         } catch (err) {
             let msg = 'Camera error: ';
-            if (err.name === 'NotAllowedError') msg += 'permission denied.';
-            else if (err.name === 'NotFoundError') msg += 'no camera found.';
-            else msg += err.message || 'unknown';
+            if (err.name === 'NotAllowedError') msg += 'Permission denied.';
+            else if (err.name === 'NotFoundError') msg += 'No camera found.';
+            else msg += err.message || 'Unknown';
             alert(msg);
             isGameRunning = false;
             startBtn.disabled = false;
+            loadingText.style.display = 'none';
             return;
         }
 
-        // Start drawing
+        // Start render loop
         if (animationId) cancelAnimationFrame(animationId);
         animationId = requestAnimationFrame(renderLoop);
 
         startBtn.style.display = 'none';
         handStatusDiv.style.display = 'block';
-        handStatusDiv.textContent = '🤏 Pinch thumb & index finger to pop bubbles 🫧';
+        loadingText.style.display = 'none';
     }
 
-    // Prevent unwanted touch behaviors
+    // Prevent default touch behaviors on canvas
     canvas.addEventListener('touchstart', (e) => e.preventDefault());
     canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
@@ -384,6 +401,7 @@
         startGame().catch(() => {
             alert('Failed to start. Please try again.');
             startBtn.disabled = false;
+            loadingText.style.display = 'none';
         });
     });
 
@@ -392,15 +410,15 @@
         if (hands) hands.close();
     });
 
-    // Initial placeholder
+    // Initial canvas placeholder
     canvas.width = canvas.clientWidth;
     canvas.height = canvas.clientHeight;
-    ctx.fillStyle = '#222';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#333';
+    ctx.fillRect(0,0,canvas.width,canvas.height);
     ctx.fillStyle = 'white';
     ctx.font = 'bold 18px sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText('Tap the button to start', canvas.width / 2, canvas.height / 2);
+    ctx.fillText('Tap "Start Popping"', canvas.width/2, canvas.height/2);
 })();
 </script>
 </body>
