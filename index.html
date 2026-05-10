@@ -98,7 +98,7 @@
     let pinchCenter = null;
     let currentLandmarks = null;
     let canvasWidth, canvasHeight;
-    const PINCH_THRESHOLD = 0.035;
+    const PINCH_THRESHOLD = 0.045;
 
     // ---------- Audio (synthesized pop sound) ----------
     let audioCtx = null;
@@ -188,27 +188,38 @@
             const baseSize = Math.min(canvasWidth, canvasHeight);
             const radius = b.radiusNorm * baseSize;
             if (radius < 2) continue;
-            const grad = ctx.createRadialGradient(cx - radius*0.3, cy - radius*0.3, radius*0.1, cx, cy, radius);
-            grad.addColorStop(0, '#ffdd99');
-            grad.addColorStop(0.5, '#ffaa66');
-            grad.addColorStop(1, '#dd5533');
+
+            // 肥皂泡风格渐变：浅蓝 → 淡紫 → 透明边缘
+            const grad = ctx.createRadialGradient(
+                cx - radius * 0.3, cy - radius * 0.3, radius * 0.1,
+                cx, cy, radius
+            );
+            grad.addColorStop(0, 'rgba(255, 255, 255, 0.9)');      // 中心高光
+            grad.addColorStop(0.3, 'rgba(200, 220, 255, 0.7)');   // 淡蓝
+            grad.addColorStop(0.7, 'rgba(160, 180, 240, 0.4)');   // 蓝紫
+            grad.addColorStop(1, 'rgba(130, 150, 220, 0.1)');     // 几乎透明边缘
+
             ctx.beginPath();
-            ctx.arc(cx, cy, radius, 0, Math.PI*2);
+            ctx.arc(cx, cy, radius, 0, Math.PI * 2);
             ctx.fillStyle = grad;
-            ctx.shadowBlur = 8;
-            ctx.shadowColor = 'rgba(255,150,50,0.4)';
+            ctx.shadowBlur = 10;
+            ctx.shadowColor = 'rgba(120, 180, 255, 0.5)';         // 淡蓝光晕
             ctx.fill();
             ctx.shadowBlur = 0;
-            ctx.strokeStyle = 'rgba(255,245,200,0.8)';
+
+            // 边缘线条
+            ctx.strokeStyle = 'rgba(200, 220, 255, 0.6)';
             ctx.lineWidth = 1.5;
             ctx.stroke();
-            // highlight
+
+            // 小高光点
             ctx.beginPath();
-            ctx.arc(cx - radius*0.2, cy - radius*0.2, radius*0.2, 0, Math.PI*2);
-            ctx.fillStyle = 'rgba(255,255,210,0.6)';
+            ctx.arc(cx - radius * 0.2, cy - radius * 0.2, radius * 0.2, 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
             ctx.fill();
         }
     }
+
 
     function drawHand(landmarks) {
         if (!landmarks) return;
@@ -302,8 +313,8 @@
         hands.setOptions({
             maxNumHands: 1,
             modelComplexity: 1,
-            minDetectionConfidence: 0.5,
-            minTrackingConfidence: 0.5
+            minDetectionConfidence: 0.4,   // 原 0.5，降低以便更快检测手
+            minTrackingConfidence: 0.4     // 原 0.5
         });
         hands.onResults((results) => {
             if (!isGameRunning) return;
